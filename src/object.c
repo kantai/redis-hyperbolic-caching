@@ -42,6 +42,7 @@ robj *createObject(int type, void *ptr) {
     o->encoding = REDIS_ENCODING_RAW;
     o->ptr = ptr;
     o->refcount = 1;
+    o->cost = 1;
 
     /* Set the LRU to the current lruclock (minutes resolution). */
     o->lru = LRU_CLOCK();
@@ -66,6 +67,8 @@ robj *createEmbeddedStringObject(char *ptr, size_t len) {
     o->ptr = sh+1;
     o->refcount = 1;
     o->lru = LRU_CLOCK();
+
+    o->cost = 1;
 
     sh->len = len;
     sh->free = 0;
@@ -697,6 +700,10 @@ unsigned long long estimateObjectIdleTime(robj *o) {
         return (lruclock + (REDIS_LRU_CLOCK_MAX - o->lru)) *
                     REDIS_LRU_CLOCK_RESOLUTION;
     }
+}
+
+unsigned long long getObjectCost(robj *o){
+  return o->cost;
 }
 
 /* This is a helper function for the OBJECT command. We need to lookup keys

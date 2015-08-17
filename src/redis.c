@@ -3111,7 +3111,7 @@ struct evictionPoolEntry *evictionPoolAlloc(void) {
 
     ep = zmalloc(sizeof(*ep)*REDIS_EVICTION_POOL_SIZE);
     for (j = 0; j < REDIS_EVICTION_POOL_SIZE; j++) {
-        ep[j].idle = 0;
+        ep[j].priority = 0;
         ep[j].key = NULL;
     }
     return ep;
@@ -3142,7 +3142,7 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
 
     count = dictGetSomeKeys(sampledict,samples,server.maxmemory_samples);
     for (j = 0; j < count; j++) {
-        unsigned long long idle;
+        unsigned long long priority;
         sds key;
         robj *o;
         dictEntry *de;
@@ -3154,15 +3154,16 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
          * again in the key dictionary to obtain the value object. */
         if (sampledict != keydict) de = dictFind(keydict, key);
         o = dictGetVal(de);
-        idle = estimateObjectIdleTime(o);
-
+	
+	priority = getObjectPriority(o); // higher is better!
+	
         /* Insert the element inside the pool.
          * First, find the first empty bucket or the first populated
          * bucket that has an idle time smaller than our idle time. */
         k = 0;
         while (k < REDIS_EVICTION_POOL_SIZE &&
                pool[k].key &&
-               pool[k].idle < idle) k++;
+               pool[k].priority < priority) k++;
         if (k == 0 && pool[REDIS_EVICTION_POOL_SIZE-1].key != NULL) {
             /* Can't insert if the element is < the worst element we have
              * and there are no empty buckets. */
@@ -3187,7 +3188,7 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
             }
         }
         pool[k].key = sdsdup(key);
-        pool[k].idle = idle;
+        pool[k].priority = priority;
     }
     if (samples != _samples) zfree(samples);
 }
@@ -3277,7 +3278,7 @@ int freeMemoryIfNeeded(void) {
                         /* Clear the element on the right which is empty
                          * since we shifted one position to the left.  */
                         pool[REDIS_EVICTION_POOL_SIZE-1].key = NULL;
-                        pool[REDIS_EVICTION_POOL_SIZE-1].idle = 0;
+                        pool[REDIS_EVICTION_POOL_SIZE-1].priority = 0;
 
                         /* If the key exists, is our pick. Otherwise it is
                          * a ghost and we need to try the next element. */
