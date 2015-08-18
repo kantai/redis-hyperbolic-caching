@@ -36,6 +36,13 @@
 #define strtold(a,b) ((long double)strtod((a),(b)))
 #endif
 
+void initLRU(robj* o){
+  switch(PRIORITY_TRACKING){
+  case TRACKING_LFU: o->lru = 1; break;
+  case TRACKING_LRU: o->lru = LRU_CLOCK(); break;
+  }
+}
+
 robj *createObject(int type, void *ptr) {
     robj *o = zmalloc(sizeof(*o));
     o->type = type;
@@ -44,8 +51,7 @@ robj *createObject(int type, void *ptr) {
     o->refcount = 1;
     o->cost = 1;
 
-    /* Set the LRU to the current lruclock (minutes resolution). */
-    o->lru = LRU_CLOCK();
+    initLRU(o);
     return o;
 }
 
@@ -66,7 +72,7 @@ robj *createEmbeddedStringObject(char *ptr, size_t len) {
     o->encoding = REDIS_ENCODING_EMBSTR;
     o->ptr = sh+1;
     o->refcount = 1;
-    o->lru = LRU_CLOCK();
+    initLRU(o);
 
     o->cost = 1;
 
@@ -690,20 +696,38 @@ char *strEncoding(int encoding) {
     }
 }
 
+unsigned long long lruEstimateObjectIdleTime(robj *o){
+  unsigned long long lruclock = LRU_CLOCK();
+  if (lruclock >= o->lru) {
+    return (lruclock - o->lru) * REDIS_LRU_CLOCK_RESOLUTION;
+  } else {
+    return (lruclock + (REDIS_LRU_CLOCK_MAX - o->lru)) *
+      REDIS_LRU_CLOCK_RESOLUTION;
+  }
+}
+
+unsigned long long lfuCountFromLru(robj *o){
+  return o->lru;
+}
+
 /* Given an object returns the min number of milliseconds the object was never
  * requested, using an approximated LRU algorithm. */
 unsigned long long estimateObjectIdleTime(robj *o) {
-    unsigned long long lruclock = LRU_CLOCK();
-    if (lruclock >= o->lru) {
-        return (lruclock - o->lru) * REDIS_LRU_CLOCK_RESOLUTION;
-    } else {
-        return (lruclock + (REDIS_LRU_CLOCK_MAX - o->lru)) *
-                    REDIS_LRU_CLOCK_RESOLUTION;
-    }
+  switch(PRIORITY_TRACKING){
+  case TRACKING_LFU: return lfuCountFromLru(o);
+  case TRACKING_LRU: return lruEstimateObjectIdleTime(o); 
+  }
 }
 
 unsigned long long getObjectCost(robj *o){
   return o->cost;
+}
+
+void touchObject(robj *o){
+  switch(PRIORITY_TRACKING){
+  case TRACKING_LFU: o->lru += 1; break;
+  case TRACKING_LRU: o->lru = LRU_CLOCK(); break;
+  }
 }
 
 /* This is a helper function for the OBJECT command. We need to lookup keys
@@ -738,7 +762,7 @@ void objectCommand(redisClient *c) {
     } else if (!strcasecmp(c->argv[1]->ptr,"idletime") && c->argc == 3) {
         if ((o = objectCommandLookupOrReply(c,c->argv[2],shared.nullbulk))
                 == NULL) return;
-        addReplyLongLong(c,estimateObjectIdleTime(o)/1000);
+        addReplyLongLong(c,estimateObjectIdleTime(o));
     } else {
         addReplyError(c,"Syntax error. Try OBJECT (refcount|encoding|idletime)");
     }

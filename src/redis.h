@@ -1160,6 +1160,7 @@ char *strEncoding(int encoding);
 int compareStringObjects(robj *a, robj *b);
 int collateStringObjects(robj *a, robj *b);
 int equalStringObjects(robj *a, robj *b);
+void touchObject(robj *o);
 unsigned long long estimateObjectIdleTime(robj *o);
 unsigned long long getObjectCost(robj *o);
 unsigned long long getObjectPriority(robj *o);
@@ -1580,5 +1581,11 @@ void redisLogHexDump(int level, char *descr, void *value, size_t len);
     printf("DEBUG %s:%d > " fmt "\n", __FILE__, __LINE__, __VA_ARGS__)
 #define redisDebugMark() \
     printf("-- MARK %s:%d --\n", __FILE__, __LINE__)
+
+
+/* PRIORITY TRACKING */
+#define TRACKING_LFU 0
+#define TRACKING_LRU 1
+#define PRIORITY_TRACKING 0
 
 #endif

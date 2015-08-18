@@ -5,7 +5,9 @@
 
 unsigned long long getObjectPriority(robj *o){
   unsigned long long idletime = estimateObjectIdleTime(o);
-  unsigned long long inverse_p = idletime / getObjectCost(o);
-  
-  return inverse_p; // reverse priority ordering, to ensure that bigger is better!
+  unsigned long long cost = getObjectCost(o);
+  switch(PRIORITY_TRACKING){
+  case TRACKING_LFU: return idletime * cost;
+  case TRACKING_LRU: return ULLONG_MAX - (idletime / cost);
+  }
 }

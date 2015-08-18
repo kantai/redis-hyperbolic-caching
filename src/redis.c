@@ -3111,7 +3111,7 @@ struct evictionPoolEntry *evictionPoolAlloc(void) {
 
     ep = zmalloc(sizeof(*ep)*REDIS_EVICTION_POOL_SIZE);
     for (j = 0; j < REDIS_EVICTION_POOL_SIZE; j++) {
-        ep[j].priority = 0;
+        ep[j].priority = ULLONG_MAX;
         ep[j].key = NULL;
     }
     return ep;
@@ -3163,7 +3163,7 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
         k = 0;
         while (k < REDIS_EVICTION_POOL_SIZE &&
                pool[k].key &&
-               pool[k].priority < priority) k++;
+               pool[k].priority > priority) k++;
         if (k == 0 && pool[REDIS_EVICTION_POOL_SIZE-1].key != NULL) {
             /* Can't insert if the element is < the worst element we have
              * and there are no empty buckets. */
@@ -3278,7 +3278,7 @@ int freeMemoryIfNeeded(void) {
                         /* Clear the element on the right which is empty
                          * since we shifted one position to the left.  */
                         pool[REDIS_EVICTION_POOL_SIZE-1].key = NULL;
-                        pool[REDIS_EVICTION_POOL_SIZE-1].priority = 0;
+                        pool[REDIS_EVICTION_POOL_SIZE-1].priority = ULLONG_MAX;
 
                         /* If the key exists, is our pick. Otherwise it is
                          * a ghost and we need to try the next element. */
