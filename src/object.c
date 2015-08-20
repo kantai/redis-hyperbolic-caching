@@ -775,7 +775,7 @@ COST_TYPE getObjectCost(robj *o){
   return o->cost;
 }
 
-void touchObject_DEGRADE_F(robj *o){
+void touchObject_Degrade_F(robj *o){
 #ifdef TRACKING_LFU
     long double time_delta = (long double) (estimateObjectIdleTime(o) 
 					    / REDIS_LRU_CLOCK_RESOLUTION);
@@ -785,16 +785,40 @@ void touchObject_DEGRADE_F(robj *o){
 #endif
 }
 
-void touchObject(robj *o){
-#if PRIORITY_FUNCTION == PRIORITY_FUNC_DEGRADE_F
-    touchObject_DEGRADE_F(o);
-#else
-
+void touchObject_LFRU(robj *o){
 #ifdef TRACKING_LFU
-    o->lfucount += 1;
-#endif 
+    long double time_delta = (long double) (estimateObjectIdleTime(o) 
+					    / REDIS_LRU_CLOCK_RESOLUTION);
+    long double count_scale = powl(LFU_DEGRADE, time_delta);
+    
+    o->lfucount += 1 + (count_scale * o->lfucount);
     o->lru = LRU_CLOCK();
 #endif
+}
+
+void touchObject_Default(robj *o){
+    o->lru = LRU_CLOCK();
+}
+
+void touchObject_LFU(robj *o){
+#ifdef TRACKING_LFU
+    o->lfucount++;
+#endif
+}
+ 
+void touchObject(robj *o){
+    switch(PRIORITY_FUNCTION){
+    case PRIORITY_FUNC_GD:
+	assert(0); break;
+    case PRIORITY_FUNC_LFU: 
+	touchObject_LFU(o); break;
+    case PRIORITY_FUNC_DEGRADE_F: 
+	touchObject_Degrade_F(o); break;
+    case PRIORITY_FUNC_LFRU:
+	touchObject_LFRU(o); break;
+    case PRIORITY_FUNC_DEFAULT:
+	touchObject_Default(o); break;
+    }
 }
 
 /* This is a helper function for the OBJECT command. We need to lookup keys

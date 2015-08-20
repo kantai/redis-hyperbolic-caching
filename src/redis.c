@@ -52,6 +52,7 @@
 #include <sys/resource.h>
 #include <sys/utsname.h>
 #include <locale.h>
+#include <assert.h>
 
 /* Our shared "common" objects */
 

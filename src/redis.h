@@ -394,10 +394,11 @@ typedef long long mstime_t; /* millisecond time type. */
 #define PRIORITY_FUNC_GD          1
 #define PRIORITY_FUNC_LFRU        2
 #define PRIORITY_FUNC_DEGRADE_F   3
+#define PRIORITY_FUNC_DEFAULT     4
 
-#define PRIORITY_FUNCTION         3
+#define PRIORITY_FUNCTION         2
 
-#define LFU_DEGRADE             0.9
+#define LFU_DEGRADE             0.99999
 
 
 /* Keyspace changes notification classes. Every class is associated with a
