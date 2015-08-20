@@ -872,7 +872,11 @@ void activeExpireCycle(int type) {
 }
 
 unsigned int getLRUClock(void) {
+#if REDIS_LRU_CLOCK_LOGICAL == 1
+    return server.lruclock;
+#else
     return (mstime()/REDIS_LRU_CLOCK_RESOLUTION) & REDIS_LRU_CLOCK_MAX;
+#endif
 }
 
 /* Add a sample to the operations per second array of samples. */
@@ -1461,6 +1465,7 @@ void initServerConfig(void) {
     server.maxmemory = REDIS_DEFAULT_MAXMEMORY;
     server.maxmemory_policy = REDIS_DEFAULT_MAXMEMORY_POLICY;
     server.maxmemory_samples = REDIS_DEFAULT_MAXMEMORY_SAMPLES;
+    server.maxobjects = REDIS_DEFAULT_MAXOBJECTS;
     server.hash_max_ziplist_entries = REDIS_HASH_MAX_ZIPLIST_ENTRIES;
     server.hash_max_ziplist_value = REDIS_HASH_MAX_ZIPLIST_VALUE;
     server.list_max_ziplist_entries = REDIS_LIST_MAX_ZIPLIST_ENTRIES;
@@ -1488,7 +1493,12 @@ void initServerConfig(void) {
     server.next_client_id = 1; /* Client IDs, start from 1 .*/
     server.loading_process_events_interval_bytes = (1024*1024*2);
 
+#if REDIS_LRU_CLOCK_LOGICAL == 1
+    server.lruclock = 0;
+#else
     server.lruclock = getLRUClock();
+#endif
+
     resetServerSaveParams();
 
     appendServerSaveParams(60*60,1);  /* save after 1 hour and 1 change */
@@ -2199,7 +2209,7 @@ int processCommand(redisClient *c) {
      * First we try to free some memory if possible (if there are volatile
      * keys in the dataset). If there are not the only thing we can do
      * is returning an error. */
-    if (server.maxmemory) {
+    if (server.maxmemory || server.maxobjects) {
         int retval = freeMemoryIfNeeded();
         if ((c->cmd->flags & REDIS_CMD_DENYOOM) && retval == REDIS_ERR) {
             flagTransaction(c);
@@ -3126,7 +3136,7 @@ struct evictionPoolEntry *evictionPoolAlloc(void) {
  * idle time are on the left, and keys with the higher idle time on the
  * right. */
 
-#define EVICTION_SAMPLES_ARRAY_SIZE 16
+#define EVICTION_SAMPLES_ARRAY_SIZE 128
 void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEntry *pool) {
     int j, k, count;
     dictEntry *_samples[EVICTION_SAMPLES_ARRAY_SIZE];
@@ -3142,7 +3152,7 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
 
     count = dictGetSomeKeys(sampledict,samples,server.maxmemory_samples);
     for (j = 0; j < count; j++) {
-        unsigned long long priority;
+        long double priority;
         sds key;
         robj *o;
         dictEntry *de;
@@ -3159,7 +3169,7 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
 	
         /* Insert the element inside the pool.
          * First, find the first empty bucket or the first populated
-         * bucket that has an idle time smaller than our idle time. */
+         * bucket that has a higher priority */
         k = 0;
         while (k < REDIS_EVICTION_POOL_SIZE &&
                pool[k].key &&
@@ -3172,7 +3182,7 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
             /* Inserting into empty position. No setup needed before insert. */
         } else {
             /* Inserting in the middle. Now k points to the first element
-             * greater than the element to insert.  */
+             * with priority less than the element to insert.  */
             if (pool[REDIS_EVICTION_POOL_SIZE-1].key == NULL) {
                 /* Free space on the right? Insert at k shifting
                  * all the elements from k to end to the right. */
@@ -3182,7 +3192,7 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
                 /* No free space on right? Insert at k-1 */
                 k--;
                 /* Shift all elements on the left of k (included) to the
-                 * left, so we discard the element with smaller idle time. */
+                 * left, so we discard the element with highest priority. */
                 sdsfree(pool[0].key);
                 memmove(pool,pool+1,sizeof(pool[0])*k);
             }
@@ -3194,43 +3204,74 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
 }
 
 int freeMemoryIfNeeded(void) {
+#ifdef WRITE_EVICTION_NOTICES
+    static int writeWarns = 0;
+    long double evicted_p = 0;
+#endif
+
     size_t mem_used, mem_tofree, mem_freed;
     int slaves = listLength(server.slaves);
     mstime_t latency, eviction_latency;
+    
+    int j;
 
-    /* Remove the size of slaves output buffers and AOF buffer from the
-     * count of used memory. */
-    mem_used = zmalloc_used_memory();
-    if (slaves) {
-        listIter li;
-        listNode *ln;
+    size_t dbsize, objs_tofree, objs_freed;
 
-        listRewind(server.slaves,&li);
-        while((ln = listNext(&li))) {
-            redisClient *slave = listNodeValue(ln);
-            unsigned long obuf_bytes = getClientOutputBufferMemoryUsage(slave);
-            if (obuf_bytes > mem_used)
-                mem_used = 0;
-            else
-                mem_used -= obuf_bytes;
-        }
-    }
-    if (server.aof_state != REDIS_AOF_OFF) {
-        mem_used -= sdslen(server.aof_buf);
-        mem_used -= aofRewriteBufferSize();
-    }
-
-    /* Check if we are over the memory limit. */
-    if (mem_used <= server.maxmemory) return REDIS_OK;
-
-    if (server.maxmemory_policy == REDIS_MAXMEMORY_NO_EVICTION)
-        return REDIS_ERR; /* We need to free memory, but policy forbids. */
-
-    /* Compute how much memory we need to free. */
-    mem_tofree = mem_used - server.maxmemory;
+    mem_tofree = 0;
+    objs_tofree = 0;
+    objs_freed = 0;
     mem_freed = 0;
+
+    if(server.maxmemory){
+	/* Remove the size of slaves output buffers and AOF buffer from the
+	 * count of used memory. */
+	mem_used = zmalloc_used_memory();
+	if (slaves) {
+	    listIter li;
+	    listNode *ln;
+	    
+	    listRewind(server.slaves,&li);
+	    while((ln = listNext(&li))) {
+		redisClient *slave = listNodeValue(ln);
+		unsigned long obuf_bytes = getClientOutputBufferMemoryUsage(slave);
+		if (obuf_bytes > mem_used)
+		    mem_used = 0;
+		else
+		    mem_used -= obuf_bytes;
+	    }
+	}
+	if (server.aof_state != REDIS_AOF_OFF) {
+	    mem_used -= sdslen(server.aof_buf);
+	    mem_used -= aofRewriteBufferSize();
+	}
+	
+	/* Check if we are over the memory limit. */
+	if (mem_used > server.maxmemory){
+	    if (server.maxmemory_policy == REDIS_MAXMEMORY_NO_EVICTION)
+		return REDIS_ERR; /* We need to free memory, but policy forbids. */
+	
+	    /* Compute how much memory we need to free. */
+	    mem_tofree = mem_used - server.maxmemory;
+	}
+    }
+    
+    if (server.maxobjects){
+	dbsize = 0;
+        for (j = 0; j < server.dbnum; j++)
+	    dbsize += dictSize((server.db+j)->dict);
+
+	if (dbsize > server.maxobjects){
+	    if (server.maxmemory_policy == REDIS_MAXMEMORY_NO_EVICTION)
+		return REDIS_ERR; /* We need to free memory, but policy forbids. */
+	    
+	    objs_tofree = dbsize - server.maxobjects;
+	}
+    }
+
+    if ( (objs_tofree == 0) && (mem_tofree == 0) ) return REDIS_OK;
+
     latencyStartMonitor(latency);
-    while (mem_freed < mem_tofree) {
+    while ((mem_freed < mem_tofree) || (objs_freed < objs_tofree)) {
         int j, k, keys_freed = 0;
 
         for (j = 0; j < server.dbnum; j++) {
@@ -3270,6 +3311,10 @@ int freeMemoryIfNeeded(void) {
                         if (pool[k].key == NULL) continue;
                         de = dictFind(dict,pool[k].key);
 
+#ifdef WRITE_EVICTION_NOTICES
+			evicted_p = pool[k].priority;
+#endif
+
                         /* Remove the entry from the pool. */
                         sdsfree(pool[k].key);
                         /* Shift all elements on its right to left. */
@@ -3291,6 +3336,17 @@ int freeMemoryIfNeeded(void) {
                         }
                     }
                 }
+
+#ifdef WRITE_EVICTION_NOTICES
+		if (writeWarns == 0){
+		    robj* val = dictGetVal(de);
+		    redisLog(REDIS_WARNING,"Evict (%4s) with \t p = %LE, \t c = %10u, \t lfu = %f, \t lru = %llu", 
+			     bestkey, evicted_p, getObjectCost(val), getLFUCount(val), 
+			     estimateObjectIdleTime(val) / REDIS_LRU_CLOCK_RESOLUTION);
+		}
+		writeWarns = (writeWarns + 1) % 1000;
+#endif
+
             }
 
             /* volatile-ttl */
@@ -3333,7 +3389,10 @@ int freeMemoryIfNeeded(void) {
                 latencyAddSampleIfNeeded("eviction-del",eviction_latency);
                 latencyRemoveNestedEvent(latency,eviction_latency);
                 delta -= (long long) zmalloc_used_memory();
+
                 mem_freed += delta;
+		objs_freed++;
+
                 server.stat_evictedkeys++;
                 notifyKeyspaceEvent(REDIS_NOTIFY_EVICTED, "evicted",
                     keyobj, db->id);
@@ -3689,6 +3748,10 @@ int main(int argc, char **argv) {
     /* Warning the user about suspicious maxmemory setting. */
     if (server.maxmemory > 0 && server.maxmemory < 1024*1024) {
         redisLog(REDIS_WARNING,"WARNING: You specified a maxmemory value that is less than 1MB (current value is %llu bytes). Are you sure this is what you really want?", server.maxmemory);
+    }
+
+    if (server.maxmemory > 0 && server.maxobjects > 0) {
+        redisLog(REDIS_WARNING,"WARNING: You specified a maxmemory value AND a maxobjects value. This behavior will be very strange, as it were.");
     }
 
     aeSetBeforeSleepProc(server.el,beforeSleep);

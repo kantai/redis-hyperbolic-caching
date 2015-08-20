@@ -117,6 +117,7 @@ typedef long long mstime_t; /* millisecond time type. */
 #define REDIS_DEFAULT_REPL_DISABLE_TCP_NODELAY 0
 #define REDIS_DEFAULT_MAXMEMORY 0
 #define REDIS_DEFAULT_MAXMEMORY_SAMPLES 5
+#define REDIS_DEFAULT_MAXOBJECTS 0
 #define REDIS_DEFAULT_AOF_FILENAME "appendonly.aof"
 #define REDIS_DEFAULT_AOF_NO_FSYNC_ON_REWRITE 0
 #define REDIS_DEFAULT_AOF_LOAD_TRUNCATED 1
@@ -385,6 +386,20 @@ typedef long long mstime_t; /* millisecond time type. */
 #define REDIS_RDB_CHILD_TYPE_DISK 1     /* RDB is written to disk. */
 #define REDIS_RDB_CHILD_TYPE_SOCKET 2   /* RDB is written to slave socket. */
 
+
+
+/* PRIORITY TRACKING */
+#define TRACKING_LFU
+#define PRIORITY_FUNC_LFU         0
+#define PRIORITY_FUNC_GD          1
+#define PRIORITY_FUNC_LFRU        2
+#define PRIORITY_FUNC_DEGRADE_F   3
+
+#define PRIORITY_FUNCTION         3
+
+#define LFU_DEGRADE             0.9
+
+
 /* Keyspace changes notification classes. Every class is associated with a
  * character for configuration purposes. */
 #define REDIS_NOTIFY_KEYSPACE (1<<0)    /* K */
@@ -421,14 +436,31 @@ typedef long long mstime_t; /* millisecond time type. */
 /* The actual Redis Object */
 #define REDIS_LRU_BITS 24
 #define REDIS_LRU_CLOCK_MAX ((1<<REDIS_LRU_BITS)-1) /* Max value of obj->lru */
-#define REDIS_LRU_CLOCK_RESOLUTION 1000 /* LRU clock resolution in ms */
+
+#define REDIS_LRU_CLOCK_LOGICAL 1
+
+#if REDIS_LRU_CLOCK_LOGICAL == 1
+#define REDIS_LRU_CLOCK_RESOLUTION 1
+#else
+#define REDIS_LRU_CLOCK_RESOLUTION 100  /* LRU clock resolution in ms */
+#endif
+
+#define COST_TYPE uint32_t
+#define COST_MAX UINT32_MAX
+#define COST_MIN 0
+
+#define COUNT_TYPE double
+
 typedef struct redisObject {
-  unsigned cost:32;
-  unsigned type:4;
-  unsigned encoding:4;
-  unsigned lru:REDIS_LRU_BITS; /* lru time (relative to server.lruclock) */
-  int refcount;
-  void *ptr;
+    COST_TYPE cost;
+#ifdef TRACKING_LFU
+    COUNT_TYPE lfucount;
+#endif
+    unsigned type:4;
+    unsigned encoding:4;
+    unsigned lru:REDIS_LRU_BITS; /* lru time (relative to server.lruclock) */
+    int refcount;
+    void *ptr;
 } robj;
 
 /* Macro used to obtain the current LRU clock.
@@ -455,9 +487,9 @@ typedef struct redisObject {
  * greater idle times to the right (ascending order).
  *
  * Empty entries have the key pointer set to NULL. */
-#define REDIS_EVICTION_POOL_SIZE 16
+#define REDIS_EVICTION_POOL_SIZE 4
 struct evictionPoolEntry {
-    unsigned long long priority;    /* Object priority. */
+    long double priority;    /* Object priority. */
     sds key;                        /* Key name. */
 };
 
@@ -862,6 +894,7 @@ struct redisServer {
     /* Limits */
     unsigned int maxclients;            /* Max number of simultaneous clients */
     unsigned long long maxmemory;   /* Max number of memory bytes to use */
+    unsigned long long maxobjects;   /* Max number of memory bytes to use */
     int maxmemory_policy;           /* Policy for key eviction */
     int maxmemory_samples;          /* Pricision of random sampling */
     /* Blocked clients */
@@ -1059,6 +1092,7 @@ void addReplyError(redisClient *c, char *err);
 void addReplyStatus(redisClient *c, char *status);
 void addReplyDouble(redisClient *c, double d);
 void addReplyLongLong(redisClient *c, long long ll);
+void addReplyCost(redisClient *c, COST_TYPE cost);
 void addReplyMultiBulkLen(redisClient *c, long length);
 void copyClientOutputBuffer(redisClient *dst, redisClient *src);
 void *dupClientReplyValue(void *o);
@@ -1156,14 +1190,16 @@ int getDoubleFromObjectOrReply(redisClient *c, robj *o, double *target, const ch
 int getLongLongFromObject(robj *o, long long *target);
 int getLongDoubleFromObject(robj *o, long double *target);
 int getLongDoubleFromObjectOrReply(redisClient *c, robj *o, long double *target, const char *msg);
+int getCostFromObjectOrReply(redisClient *c, robj *o, COST_TYPE *target, const char *msg);
 char *strEncoding(int encoding);
 int compareStringObjects(robj *a, robj *b);
 int collateStringObjects(robj *a, robj *b);
 int equalStringObjects(robj *a, robj *b);
 void touchObject(robj *o);
 unsigned long long estimateObjectIdleTime(robj *o);
-unsigned long long getObjectCost(robj *o);
-unsigned long long getObjectPriority(robj *o);
+COUNT_TYPE getLFUCount(robj *o);
+COST_TYPE getObjectCost(robj *o);
+long double getObjectPriority(robj *o);
 
 #define sdsEncodedObject(objptr) (objptr->encoding == REDIS_ENCODING_RAW || objptr->encoding == REDIS_ENCODING_EMBSTR)
 
@@ -1582,10 +1618,5 @@ void redisLogHexDump(int level, char *descr, void *value, size_t len);
 #define redisDebugMark() \
     printf("-- MARK %s:%d --\n", __FILE__, __LINE__)
 
-
-/* PRIORITY TRACKING */
-#define TRACKING_LFU 0
-#define TRACKING_LRU 1
-#define PRIORITY_TRACKING 0
 
 #endif

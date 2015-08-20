@@ -37,10 +37,10 @@
 #endif
 
 void initLRU(robj* o){
-  switch(PRIORITY_TRACKING){
-  case TRACKING_LFU: o->lru = 1; break;
-  case TRACKING_LRU: o->lru = LRU_CLOCK(); break;
-  }
+#ifdef TRACKING_LFU
+    o->lfucount = 1;
+#endif
+    o->lru = LRU_CLOCK();
 }
 
 robj *createObject(int type, void *ptr) {
@@ -652,6 +652,44 @@ int getLongLongFromObject(robj *o, long long *target) {
     return REDIS_OK;
 }
 
+int getULongLongFromObject(robj *o, unsigned long long *target) {
+    unsigned long long value;
+    char *eptr;
+
+    if (o == NULL) {
+        value = 0;
+    } else {
+        redisAssertWithInfo(NULL,o,o->type == REDIS_STRING);
+        if (sdsEncodedObject(o)) {
+            errno = 0;
+            value = strtoull(o->ptr, &eptr, 10);
+            if (isspace(((char*)o->ptr)[0]) || eptr[0] != '\0' ||
+                errno == ERANGE)
+                return REDIS_ERR;
+        } else if (o->encoding == REDIS_ENCODING_INT) {
+            value = (unsigned long)o->ptr;
+        } else {
+            redisPanic("Unknown string encoding");
+        }
+    }
+    if (target) *target = value;
+    return REDIS_OK;
+}
+
+int getULongLongFromObjectOrReply(redisClient *c, robj *o, unsigned long long *target, const char *msg) {
+    unsigned long long value;
+    if (getULongLongFromObject(o, &value) != REDIS_OK) {
+        if (msg != NULL) {
+            addReplyError(c,(char*)msg);
+        } else {
+            addReplyError(c,"value is not an integer or out of range");
+        }
+        return REDIS_ERR;
+    }
+    *target = value;
+    return REDIS_OK;
+}
+
 int getLongLongFromObjectOrReply(redisClient *c, robj *o, long long *target, const char *msg) {
     long long value;
     if (getLongLongFromObject(o, &value) != REDIS_OK) {
@@ -682,6 +720,22 @@ int getLongFromObjectOrReply(redisClient *c, robj *o, long *target, const char *
     return REDIS_OK;
 }
 
+int getCostFromObjectOrReply(redisClient *c, robj *o, COST_TYPE *target, const char *msg) {
+    unsigned long long value;
+
+    if (getULongLongFromObjectOrReply(c, o, &value, msg) != REDIS_OK) return REDIS_ERR;
+    if (value > COST_MAX) {
+        if (msg != NULL) {
+            addReplyError(c,(char*)msg);
+        } else {
+            addReplyError(c,"value is out of range");
+        }
+        return REDIS_ERR;
+    }
+    *target = (COST_TYPE) value;
+    return REDIS_OK;
+}
+
 char *strEncoding(int encoding) {
     switch(encoding) {
     case REDIS_ENCODING_RAW: return "raw";
@@ -696,38 +750,51 @@ char *strEncoding(int encoding) {
     }
 }
 
-unsigned long long lruEstimateObjectIdleTime(robj *o){
-  unsigned long long lruclock = LRU_CLOCK();
-  if (lruclock >= o->lru) {
-    return (lruclock - o->lru) * REDIS_LRU_CLOCK_RESOLUTION;
-  } else {
-    return (lruclock + (REDIS_LRU_CLOCK_MAX - o->lru)) *
-      REDIS_LRU_CLOCK_RESOLUTION;
-  }
-}
-
-unsigned long long lfuCountFromLru(robj *o){
-  return o->lru;
+COUNT_TYPE getLFUCount(robj *o){
+#ifdef TRACKING_LFU
+    return o->lfucount;
+#else
+    assert(-1);
+    return 0;
+#endif
 }
 
 /* Given an object returns the min number of milliseconds the object was never
  * requested, using an approximated LRU algorithm. */
 unsigned long long estimateObjectIdleTime(robj *o) {
-  switch(PRIORITY_TRACKING){
-  case TRACKING_LFU: return lfuCountFromLru(o);
-  case TRACKING_LRU: return lruEstimateObjectIdleTime(o); 
-  }
+    unsigned long long lruclock = LRU_CLOCK();
+    if (lruclock >= o->lru) {
+	return (lruclock - o->lru) * REDIS_LRU_CLOCK_RESOLUTION;
+    } else {
+	return (lruclock + (REDIS_LRU_CLOCK_MAX - o->lru)) *
+	    REDIS_LRU_CLOCK_RESOLUTION;
+    }
 }
 
-unsigned long long getObjectCost(robj *o){
+COST_TYPE getObjectCost(robj *o){
   return o->cost;
 }
 
+void touchObject_DEGRADE_F(robj *o){
+#ifdef TRACKING_LFU
+    long double time_delta = (long double) (estimateObjectIdleTime(o) 
+					    / REDIS_LRU_CLOCK_RESOLUTION);
+    
+    o->lfucount += 1 + (LFU_DEGRADE * o->lfucount);
+    o->lru += (unsigned long long) ((1.0 - LFU_DEGRADE) * time_delta);
+#endif
+}
+
 void touchObject(robj *o){
-  switch(PRIORITY_TRACKING){
-  case TRACKING_LFU: o->lru += 1; break;
-  case TRACKING_LRU: o->lru = LRU_CLOCK(); break;
-  }
+#if PRIORITY_FUNCTION == PRIORITY_FUNC_DEGRADE_F
+    touchObject_DEGRADE_F(o);
+#else
+
+#ifdef TRACKING_LFU
+    o->lfucount += 1;
+#endif 
+    o->lru = LRU_CLOCK();
+#endif
 }
 
 /* This is a helper function for the OBJECT command. We need to lookup keys
@@ -747,7 +814,7 @@ robj *objectCommandLookupOrReply(redisClient *c, robj *key, robj *reply) {
 }
 
 /* Object command allows to inspect the internals of an Redis Object.
- * Usage: OBJECT <refcount|encoding|idletime> <key> */
+ * Usage: OBJECT <refcount|encoding|idletime|cost> <key> */
 void objectCommand(redisClient *c) {
     robj *o;
 
@@ -763,6 +830,14 @@ void objectCommand(redisClient *c) {
         if ((o = objectCommandLookupOrReply(c,c->argv[2],shared.nullbulk))
                 == NULL) return;
         addReplyLongLong(c,estimateObjectIdleTime(o));
+    } else if (!strcasecmp(c->argv[1]->ptr,"lfucount") && c->argc == 3) {
+        if ((o = objectCommandLookupOrReply(c,c->argv[2],shared.nullbulk))
+                == NULL) return;
+        addReplyDouble(c,getLFUCount(o));
+    } else if (!strcasecmp(c->argv[1]->ptr,"cost") && c->argc == 3) {
+        if ((o = objectCommandLookupOrReply(c,c->argv[2],shared.nullbulk))
+                == NULL) return;
+        addReplyCost(c,getObjectCost(o));
     } else {
         addReplyError(c,"Syntax error. Try OBJECT (refcount|encoding|idletime)");
     }

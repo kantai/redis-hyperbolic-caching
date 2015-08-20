@@ -51,6 +51,10 @@ robj *lookupKey(redisDb *db, robj *key) {
          * a copy on write madness. */
         if (server.rdb_child_pid == -1 && server.aof_child_pid == -1)
 	  touchObject(val);
+#if REDIS_LRU_CLOCK_LOGICAL == 1
+	server.lruclock++;
+#endif
+
         return val;
     } else {
         return NULL;

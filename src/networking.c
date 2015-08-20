@@ -505,6 +505,10 @@ void addReplyLongLong(redisClient *c, long long ll) {
         addReplyLongLongWithPrefix(c,ll,':');
 }
 
+void addReplyCost(redisClient *c, COST_TYPE cost) {
+    addReplyLongLong(c, (long long) cost);
+}
+
 void addReplyMultiBulkLen(redisClient *c, long length) {
     if (length < REDIS_SHARED_BULKHDR_LEN)
         addReply(c,shared.mbulkhdr[length]);
