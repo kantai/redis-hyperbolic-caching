@@ -54,6 +54,7 @@
 #include <locale.h>
 #include <assert.h>
 
+
 /* Our shared "common" objects */
 
 struct sharedObjectsStruct shared;
@@ -1500,6 +1501,10 @@ void initServerConfig(void) {
     server.lruclock = getLRUClock();
 #endif
 
+#if PRIORITY_FUNCTION == PRIORITY_FUNC_GD
+    server.greedydual_H = 0;
+#endif
+
     resetServerSaveParams();
 
     appendServerSaveParams(60*60,1);  /* save after 1 hour and 1 change */
@@ -1825,6 +1830,9 @@ void initServer(void) {
         server.db[j].eviction_pool = evictionPoolAlloc();
         server.db[j].id = j;
         server.db[j].avg_ttl = 0;
+#ifdef EVICT_PRIORITY_QUEUE
+	server.db[j].queue = create_queue();
+#endif
     }
     server.pubsub_channels = dictCreate(&keylistDictType,NULL);
     server.pubsub_patterns = listCreate();
@@ -3138,6 +3146,71 @@ struct evictionPoolEntry *evictionPoolAlloc(void) {
  * right. */
 
 #define EVICTION_SAMPLES_ARRAY_SIZE 128
+#ifdef EVICT_PRIORITY_QUEUE
+int count = 0;
+void evictionPoolPopulate(void *pq, dict *keydict, struct evictionPoolEntry *pool) {
+    int k;
+    sds key;
+    long double priority;
+    robj *o;
+    dictEntry *de;
+    pq_node* lowest;
+    
+    lowest = pq_get_lowest(pq);
+    key = sdsnew(lowest->key);
+    //sdsfree(lowest->key);
+    //    pq_free_node(lowest);
+
+    de = dictFind(keydict, key);
+    if (!de){
+	redisLog(REDIS_WARNING, "%s wasn't found in dict.", key);
+	return;
+    }    
+
+    /*    if (count % 5000 == 0) {
+	redisLog(REDIS_WARNING, "%s -> p = %LF, lu = %llu", key, 
+		 lowest->priority, lowest->lastuse);
+    }
+    count ++;
+    */
+    o = dictGetVal(de);
+    priority = getObjectPriority(o);
+    
+    /* Insert the element inside the pool.
+     * First, find the first empty bucket or the first populated
+     * bucket that has a higher priority */
+    k = 0;
+    while (k < REDIS_EVICTION_POOL_SIZE &&
+	   pool[k].key &&
+	   pool[k].priority > priority) k++;
+    if (k == 0 && pool[REDIS_EVICTION_POOL_SIZE-1].key != NULL) {
+	/* Can't insert if the element is < the worst element we have
+	 * and there are no empty buckets. */
+    } else if (k < REDIS_EVICTION_POOL_SIZE && pool[k].key == NULL) {
+	/* Inserting into empty position. No setup needed before insert. */
+    } else {
+	/* Inserting in the middle. Now k points to the first element
+	 * with priority less than the element to insert.  */
+	if (pool[REDIS_EVICTION_POOL_SIZE-1].key == NULL) {
+	    /* Free space on the right? Insert at k shifting
+	     * all the elements from k to end to the right. */
+	    memmove(pool+k+1,pool+k,
+                    sizeof(pool[0])*(REDIS_EVICTION_POOL_SIZE-k-1));
+	} else {
+	    /* No free space on right? Insert at k-1 */
+	    k--;
+	    /* Shift all elements on the left of k (included) to the
+	     * left, so we discard the element with highest priority. */
+	    sdsfree(pool[0].key);
+	    memmove(pool,pool+1,sizeof(pool[0])*k);
+	}
+    }
+
+    pool[k].key = sdsdup(key);
+    pool[k].priority = priority;
+}
+
+#else
 void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEntry *pool) {
     int j, k, count;
     dictEntry *_samples[EVICTION_SAMPLES_ARRAY_SIZE];
@@ -3203,10 +3276,13 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
     }
     if (samples != _samples) zfree(samples);
 }
+#endif
 
 int freeMemoryIfNeeded(void) {
-#ifdef WRITE_EVICTION_NOTICES
+#if WRITE_EVICTION_NOTICES == 1
     static int writeWarns = 0;
+#endif
+#if WRITE_EVICTION_NOTICES == 1 || PRIORITY_FUNCTION == PRIORITY_FUNC_GD 
     long double evicted_p = 0;
 #endif
 
@@ -3306,13 +3382,17 @@ int freeMemoryIfNeeded(void) {
                 struct evictionPoolEntry *pool = db->eviction_pool;
 
                 while(bestkey == NULL) {
+#ifdef EVICT_PRIORITY_QUEUE
+		    evictionPoolPopulate(db->queue, db->dict, db->eviction_pool);
+#else
                     evictionPoolPopulate(dict, db->dict, db->eviction_pool);
+#endif
                     /* Go backward from best to worst element to evict. */
                     for (k = REDIS_EVICTION_POOL_SIZE-1; k >= 0; k--) {
                         if (pool[k].key == NULL) continue;
                         de = dictFind(dict,pool[k].key);
 
-#ifdef WRITE_EVICTION_NOTICES
+#if WRITE_EVICTION_NOTICES == 1 || PRIORITY_FUNCTION == PRIORITY_FUNC_GD 
 			evicted_p = pool[k].priority;
 #endif
 
@@ -3338,7 +3418,7 @@ int freeMemoryIfNeeded(void) {
                     }
                 }
 
-#ifdef WRITE_EVICTION_NOTICES
+#if WRITE_EVICTION_NOTICES == 1
 		if (writeWarns == 0){
 		    robj* val = dictGetVal(de);
 		    redisLog(REDIS_WARNING,"Evict (%4s) with \t p = %LE, \t c = %10u, \t lfu = %f, \t lru = %llu", 
@@ -3379,8 +3459,8 @@ int freeMemoryIfNeeded(void) {
                  * It is possible that actually the memory needed to propagate
                  * the DEL in AOF and replication link is greater than the one
                  * we are freeing removing the key, but we can't account for
-                 * that otherwise we would never exit the loop.
-                 *
+                 * that otherwise we would never exit the loop. 
+                *
                  * AOF and Output buffer memory will be freed eventually so
                  * we only care about memory used by the key space. */
                 delta = (long long) zmalloc_used_memory();
@@ -3399,6 +3479,11 @@ int freeMemoryIfNeeded(void) {
                     keyobj, db->id);
                 decrRefCount(keyobj);
                 keys_freed++;
+
+#if PRIORITY_FUNCTION == PRIORITY_FUNC_GD
+		if (evicted_p > server.greedydual_H)
+		    server.greedydual_H = evicted_p;
+#endif
 
                 /* When the memory to free starts to be big enough, we may
                  * start spending so much time here that is impossible to

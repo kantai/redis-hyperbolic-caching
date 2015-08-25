@@ -43,18 +43,32 @@ void slotToKeyFlush(void);
 
 robj *lookupKey(redisDb *db, robj *key) {
     dictEntry *de = dictFind(db->dict,key->ptr);
+#if REDIS_LRU_CLOCK_LOGICAL == 1
+    server.lruclock++;
+#endif
+
     if (de) {
         robj *val = dictGetVal(de);
 
         /* Update the access time for the ageing algorithm.
          * Don't do it if we have a saving child, as this will trigger
          * a copy on write madness. */
-        if (server.rdb_child_pid == -1 && server.aof_child_pid == -1)
-	  touchObject(val);
-#if REDIS_LRU_CLOCK_LOGICAL == 1
-	server.lruclock++;
+        if (server.rdb_child_pid == -1 && server.aof_child_pid == -1){
+
+#ifdef EVICT_PRIORITY_QUEUE
+	    pq_node* to_find = &val->pq_node;
+	    pq_find_and_remove(db->queue, to_find);
 #endif
 
+	    touchObject(val);
+
+#ifdef EVICT_PRIORITY_QUEUE
+	    to_find->priority = getObjectPriority(val);
+	    to_find->lastuse = val->lru;
+	    pq_insert(db->queue, to_find);
+#endif
+
+	}
         return val;
     } else {
         return NULL;
@@ -127,6 +141,18 @@ void setKey(redisDb *db, robj *key, robj *val) {
     } else {
         dbOverwrite(db,key,val);
     }
+
+    touchObject(val);
+
+#ifdef EVICT_PRIORITY_QUEUE
+
+    val->pq_node.priority = getObjectPriority(val);
+    val->pq_node.lastuse = val->lru;
+    val->pq_node.key = sdsnew(key->ptr);
+
+    pq_insert(db->queue, &val->pq_node);
+#endif
+
     incrRefCount(val);
     removeExpire(db,key);
     signalModifiedKey(db,key);
@@ -259,6 +285,11 @@ void flushdbCommand(redisClient *c) {
     signalFlushedDb(c->db->id);
     dictEmpty(c->db->dict,NULL);
     dictEmpty(c->db->expires,NULL);
+    
+#ifdef EVICT_PRIORITY_QUEUE
+    pq_erase_queue(c->db->queue);
+#endif
+
     if (server.cluster_enabled) slotToKeyFlush();
     addReply(c,shared.ok);
 }

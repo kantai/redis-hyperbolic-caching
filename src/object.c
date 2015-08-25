@@ -38,9 +38,16 @@
 
 void initLRU(robj* o){
 #ifdef TRACKING_LFU
-    o->lfucount = 1;
+    o->lfucount = 0;
 #endif
     o->lru = LRU_CLOCK();
+
+#ifdef EVICT_PRIORITY_QUEUE
+    o->pq_node.priority = 0;
+    o->pq_node.lastuse = 0;
+    o->pq_node.key = 0;
+#endif
+
 }
 
 robj *createObject(int type, void *ptr) {
@@ -321,7 +328,11 @@ void decrRefCount(robj *o) {
         case REDIS_HASH: freeHashObject(o); break;
         default: redisPanic("Unknown object type"); break;
         }
-        zfree(o);
+#ifdef EVICT_PRIORITY_QUEUE
+	if(o->pq_node.key)
+	    sdsfree(o->pq_node.key);
+#endif
+       zfree(o);
     } else {
         o->refcount--;
     }
@@ -796,6 +807,14 @@ void touchObject_LFRU(robj *o){
 #endif
 }
 
+void touchObject_GD(robj *o){
+#if PRIORITY_FUNCTION == PRIORITY_FUNC_GD
+    // I use the lfucount field to store the priority.
+    o->lfucount = getObjectCost(o) + server.greedydual_H;
+    o->lru = LRU_CLOCK();
+#endif
+}
+
 void touchObject_Default(robj *o){
     o->lru = LRU_CLOCK();
 }
@@ -809,7 +828,7 @@ void touchObject_LFU(robj *o){
 void touchObject(robj *o){
     switch(PRIORITY_FUNCTION){
     case PRIORITY_FUNC_GD:
-	assert(0); break;
+	touchObject_GD(o); break;
     case PRIORITY_FUNC_LFU: 
 	touchObject_LFU(o); break;
     case PRIORITY_FUNC_DEGRADE_F: 

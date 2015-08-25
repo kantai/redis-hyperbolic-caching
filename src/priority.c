@@ -38,6 +38,11 @@ long double getPriority_LFRU(robj *o){
     return count * scale_counts;
 }
 
+long double getPriority_GD(robj *o){
+    // again, I'm storing the GD priority value in the lfucount
+    return getLFUCount(o);
+}
+
 long double getObjectPriority(robj *o){
     switch(PRIORITY_FUNCTION){
     case PRIORITY_FUNC_LFU: 
@@ -46,6 +51,8 @@ long double getObjectPriority(robj *o){
 	return getPriority_Degrade_F(o);
     case PRIORITY_FUNC_LFRU:
 	return getPriority_LFRU(o);
+    case PRIORITY_FUNC_GD:
+	return getPriority_GD(o);
     }
 }
 

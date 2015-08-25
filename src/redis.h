@@ -30,6 +30,9 @@
 #ifndef __REDIS_H
 #define __REDIS_H
 
+#define EVICT_PRIORITY_QUEUE
+
+
 #include "fmacros.h"
 #include "config.h"
 #include "solarisfixes.h"
@@ -62,6 +65,8 @@ typedef long long mstime_t; /* millisecond time type. */
 #include "util.h"    /* Misc functions useful in many places */
 #include "latency.h" /* Latency monitor API */
 #include "sparkline.h" /* ASII graphs API */
+
+#include "priority_queue_wrapper.h"
 
 /* Error codes */
 #define REDIS_OK                0
@@ -396,7 +401,7 @@ typedef long long mstime_t; /* millisecond time type. */
 #define PRIORITY_FUNC_DEGRADE_F   3
 #define PRIORITY_FUNC_DEFAULT     4
 
-#define PRIORITY_FUNCTION         2
+#define PRIORITY_FUNCTION         1
 
 #define LFU_DEGRADE             0.99999
 
@@ -457,6 +462,9 @@ typedef struct redisObject {
 #ifdef TRACKING_LFU
     COUNT_TYPE lfucount;
 #endif
+#ifdef EVICT_PRIORITY_QUEUE
+    pq_node pq_node;
+#endif
     unsigned type:4;
     unsigned encoding:4;
     unsigned lru:REDIS_LRU_BITS; /* lru time (relative to server.lruclock) */
@@ -506,6 +514,9 @@ typedef struct redisDb {
     struct evictionPoolEntry *eviction_pool;    /* Eviction pool of keys */
     int id;                     /* Database ID */
     long long avg_ttl;          /* Average TTL, just for stats */
+#ifdef EVICT_PRIORITY_QUEUE
+    void* queue;
+#endif
 } redisDb;
 
 /* Client MULTI/EXEC state */
@@ -956,6 +967,10 @@ struct redisServer {
     int assert_line;
     int bug_report_start; /* True if bug report header was already logged. */
     int watchdog_period;  /* Software watchdog period in ms. 0 = off */
+
+#if PRIORITY_FUNCTION == PRIORITY_FUNC_GD
+    long double greedydual_H;
+#endif
 };
 
 typedef struct pubsubPattern {
