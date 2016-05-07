@@ -786,13 +786,19 @@ COST_TYPE getObjectCost(robj *o){
   return o->cost;
 }
 
+COST_TYPE setObjectCost(robj *o, COST_TYPE cost){
+    o->cost = cost;
+    return o->cost;
+}
+
 void touchObject_Degrade_F(robj *o){
 #ifdef TRACKING_LFU
-    long double time_delta = (long double) (estimateObjectIdleTime(o) 
-					    / REDIS_LRU_CLOCK_RESOLUTION);
-    
-    o->lfucount += 1 + (LFU_DEGRADE * o->lfucount);
-    o->lru += (unsigned long long) ((1.0 - LFU_DEGRADE) * time_delta);
+    if (o->lfucount == 0) {
+	// initialize lfu-count.
+	o->lfucount = HYPER_LEEWAY + (1.0 - HYPER_LEEWAY) * (server.last_obj_f / o->cost);
+    }else{
+	o->lfucount += 1;
+    }
 #endif
 }
 
@@ -803,16 +809,16 @@ void touchObject_LFRU(robj *o){
     long double count_scale = powl(LFU_DEGRADE, time_delta);
     
     o->lfucount += 1 + (count_scale * o->lfucount);
-    o->lru = LRU_CLOCK();
 #endif
+    o->lru = LRU_CLOCK();
 }
 
 void touchObject_GD(robj *o){
 #if PRIORITY_FUNCTION == PRIORITY_FUNC_GD
     // I use the lfucount field to store the priority.
     o->lfucount = getObjectCost(o) + server.greedydual_H;
-    o->lru = LRU_CLOCK();
 #endif
+    o->lru = LRU_CLOCK();
 }
 
 void touchObject_Default(robj *o){
@@ -854,6 +860,16 @@ robj *objectCommandLookupOrReply(redisClient *c, robj *key, robj *reply) {
 
     if (!o) addReply(c, reply);
     return o;
+}
+
+void setCostCommand(redisClient *c){
+    robj *o;
+    if ((o = objectCommandLookupOrReply(c,c->argv[1],shared.nullbulk))
+	== NULL) return;
+    COST_TYPE cost;
+    if (getCostFromObjectOrReply(c,c->argv[2],&cost,NULL) != REDIS_OK)
+	return;
+    addReplyCost(c,setObjectCost(o, cost));
 }
 
 /* Object command allows to inspect the internals of an Redis Object.

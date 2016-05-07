@@ -125,6 +125,7 @@ struct redisServer server; /* server global state */
 struct redisCommand redisCommandTable[] = {
     {"get",getCommand,2,"rF",0,NULL,1,1,1,0,0},
     {"set",setCommand,-3,"wm",0,NULL,1,1,1,0,0},
+    {"setcost",setCostCommand,3,"wF",0,NULL,1,1,1,0,0},
     {"setnx",setnxCommand,3,"wmF",0,NULL,1,1,1,0,0},
     {"setex",setexCommand,4,"wm",0,NULL,1,1,1,0,0},
     {"psetex",psetexCommand,4,"wm",0,NULL,1,1,1,0,0},
@@ -1504,6 +1505,7 @@ void initServerConfig(void) {
 #if PRIORITY_FUNCTION == PRIORITY_FUNC_GD
     server.greedydual_H = 0;
 #endif
+    server.last_obj_f = 0;
 
     resetServerSaveParams();
 
@@ -3282,9 +3284,7 @@ int freeMemoryIfNeeded(void) {
 #if WRITE_EVICTION_NOTICES == 1
     static int writeWarns = 0;
 #endif
-#if WRITE_EVICTION_NOTICES == 1 || PRIORITY_FUNCTION == PRIORITY_FUNC_GD 
     long double evicted_p = 0;
-#endif
 
     size_t mem_used, mem_tofree, mem_freed;
     int slaves = listLength(server.slaves);
@@ -3392,9 +3392,7 @@ int freeMemoryIfNeeded(void) {
                         if (pool[k].key == NULL) continue;
                         de = dictFind(dict,pool[k].key);
 
-#if WRITE_EVICTION_NOTICES == 1 || PRIORITY_FUNCTION == PRIORITY_FUNC_GD 
 			evicted_p = pool[k].priority;
-#endif
 
                         /* Remove the entry from the pool. */
                         sdsfree(pool[k].key);
@@ -3427,7 +3425,7 @@ int freeMemoryIfNeeded(void) {
 		}
 		writeWarns = (writeWarns + 1) % 1000;
 #endif
-
+		server.last_obj_f = evicted_p;
             }
 
             /* volatile-ttl */

@@ -30,7 +30,7 @@
 #ifndef __REDIS_H
 #define __REDIS_H
 
-#define EVICT_PRIORITY_QUEUE
+//#define EVICT_PRIORITY_QUEUE
 
 
 #include "fmacros.h"
@@ -401,10 +401,10 @@ typedef long long mstime_t; /* millisecond time type. */
 #define PRIORITY_FUNC_DEGRADE_F   3
 #define PRIORITY_FUNC_DEFAULT     4
 
-#define PRIORITY_FUNCTION         1
+#define PRIORITY_FUNCTION         4
 
 #define LFU_DEGRADE             0.99999
-
+#define HYPER_LEEWAY            0.1
 
 /* Keyspace changes notification classes. Every class is associated with a
  * character for configuration purposes. */
@@ -971,6 +971,7 @@ struct redisServer {
 #if PRIORITY_FUNCTION == PRIORITY_FUNC_GD
     long double greedydual_H;
 #endif
+    long double last_obj_f;
 };
 
 typedef struct pubsubPattern {
@@ -1608,6 +1609,7 @@ void pfcountCommand(redisClient *c);
 void pfmergeCommand(redisClient *c);
 void pfdebugCommand(redisClient *c);
 void latencyCommand(redisClient *c);
+void setCostCommand(redisClient *c);
 
 #if defined(__GNUC__)
 void *calloc(size_t count, size_t size) __attribute__ ((deprecated));
