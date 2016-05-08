@@ -43,6 +43,16 @@ long double getPriority_GD(robj *o){
     return getLFUCount(o);
 }
 
+long double getPriority_Default(robj *o){
+    unsigned long long denom = getLFUCount(o);
+    long double numer = 1.0;
+    if (denom == 0) { 
+	return LDBL_MAX;
+    }else{
+	return numer / ((long double) denom);
+    }    
+}
+
 long double getObjectPriority(robj *o){
     switch(PRIORITY_FUNCTION){
     case PRIORITY_FUNC_LFU: 
@@ -53,6 +63,8 @@ long double getObjectPriority(robj *o){
 	return getPriority_LFRU(o);
     case PRIORITY_FUNC_GD:
 	return getPriority_GD(o);
+    case PRIORITY_FUNC_DEFAULT:
+	return getPriority_Default(o);
     }
 }
 
