@@ -31,6 +31,7 @@
 #include "redis.h"
 #include <math.h>
 #include <ctype.h>
+#include <assert.h>
 
 #ifdef __CYGWIN__
 #define strtold(a,b) ((long double)strtod((a),(b)))
@@ -791,7 +792,7 @@ COST_TYPE setObjectCost(robj *o, COST_TYPE cost){
     return o->cost;
 }
 
-void touchObject_Degrade_F(robj *o){
+void touchObject_Hyper(robj *o){
 #ifdef TRACKING_LFU
     if (o->lfucount == 0) {
 	// initialize lfu-count.
@@ -837,8 +838,8 @@ void touchObject(robj *o){
 	touchObject_GD(o); break;
     case PRIORITY_FUNC_LFU: 
 	touchObject_LFU(o); break;
-    case PRIORITY_FUNC_DEGRADE_F: 
-	touchObject_Degrade_F(o); break;
+    case PRIORITY_FUNC_HYPER: 
+	touchObject_Hyper(o); break;
     case PRIORITY_FUNC_LFRU:
 	touchObject_LFRU(o); break;
     case PRIORITY_FUNC_DEFAULT:

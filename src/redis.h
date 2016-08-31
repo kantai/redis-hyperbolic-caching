@@ -30,9 +30,6 @@
 #ifndef __REDIS_H
 #define __REDIS_H
 
-//#define EVICT_PRIORITY_QUEUE
-
-
 #include "fmacros.h"
 #include "config.h"
 #include "solarisfixes.h"
@@ -394,14 +391,17 @@ typedef long long mstime_t; /* millisecond time type. */
 
 
 /* PRIORITY TRACKING */
-#define TRACKING_LFU
-#define PRIORITY_FUNC_LFU         0
-#define PRIORITY_FUNC_GD          1
+//#define TRACKING_LFU
+//#define PRIORITY_INCORPORATE_SIZE
+#define PRIORITY_FUNC_LFU         4
+#define PRIORITY_FUNC_GD          3
 #define PRIORITY_FUNC_LFRU        2
-#define PRIORITY_FUNC_DEGRADE_F   3
-#define PRIORITY_FUNC_DEFAULT     4
+#define PRIORITY_FUNC_HYPER       1
+#define PRIORITY_FUNC_DEFAULT     0
 
-#define PRIORITY_FUNCTION         4
+#ifndef PRIORITY_FUNCTION
+#define PRIORITY_FUNCTION         0
+#endif
 
 #define LFU_DEGRADE             0.99999
 #define HYPER_LEEWAY            0.1
@@ -462,9 +462,6 @@ typedef struct redisObject {
 #ifdef TRACKING_LFU
     COUNT_TYPE lfucount;
 #endif
-#ifdef EVICT_PRIORITY_QUEUE
-    pq_node pq_node;
-#endif
     unsigned type:4;
     unsigned encoding:4;
     unsigned lru:REDIS_LRU_BITS; /* lru time (relative to server.lruclock) */
@@ -514,9 +511,6 @@ typedef struct redisDb {
     struct evictionPoolEntry *eviction_pool;    /* Eviction pool of keys */
     int id;                     /* Database ID */
     long long avg_ttl;          /* Average TTL, just for stats */
-#ifdef EVICT_PRIORITY_QUEUE
-    void* queue;
-#endif
 } redisDb;
 
 /* Client MULTI/EXEC state */
@@ -1216,7 +1210,7 @@ void touchObject(robj *o);
 unsigned long long estimateObjectIdleTime(robj *o);
 COUNT_TYPE getLFUCount(robj *o);
 COST_TYPE getObjectCost(robj *o);
-long double getObjectPriority(robj *o);
+long double getObjectPriority(robj *o, sds key);
 
 #define sdsEncodedObject(objptr) (objptr->encoding == REDIS_ENCODING_RAW || objptr->encoding == REDIS_ENCODING_EMBSTR)
 

@@ -2661,6 +2661,25 @@ sds genRedisInfoString(char *section) {
             call_uname = 0;
         }
 
+	char* priority_func = "";
+	switch(PRIORITY_FUNCTION){
+	case PRIORITY_FUNC_LFU: 
+	    priority_func = "lfu"; break;
+	case PRIORITY_FUNC_HYPER: 
+#ifdef PRIORITY_INCORPORATE_SIZE
+	    priority_func = "hyper+size";
+#else
+	    priority_func = "hyper";
+#endif
+	    break;
+	case PRIORITY_FUNC_LFRU:
+	    priority_func = "lfru"; break;
+	case PRIORITY_FUNC_GD:
+	    priority_func = "gd"; break;
+	case PRIORITY_FUNC_DEFAULT:
+	    priority_func = "default"; break;
+	}
+
         info = sdscatprintf(info,
             "# Server\r\n"
             "redis_version:%s\r\n"
@@ -2679,7 +2698,8 @@ sds genRedisInfoString(char *section) {
             "uptime_in_days:%jd\r\n"
             "hz:%d\r\n"
             "lru_clock:%ld\r\n"
-            "config_file:%s\r\n",
+            "config_file:%s\r\n"
+            "priority_func:%s\r\n",
             REDIS_VERSION,
             redisGitSHA1(),
             strtol(redisGitDirty(),NULL,10) > 0,
@@ -2700,7 +2720,8 @@ sds genRedisInfoString(char *section) {
             (intmax_t)(uptime/(3600*24)),
             server.hz,
             (unsigned long) server.lruclock,
-            server.configfile ? server.configfile : "");
+	    server.configfile ? server.configfile : "",
+	    priority_func);
     }
 
     /* Clients */
@@ -3176,7 +3197,7 @@ void evictionPoolPopulate(void *pq, dict *keydict, struct evictionPoolEntry *poo
     count ++;
     */
     o = dictGetVal(de);
-    priority = getObjectPriority(o);
+    priority = getObjectPriority(o, key);
     
     /* Insert the element inside the pool.
      * First, find the first empty bucket or the first populated
@@ -3241,7 +3262,7 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
         if (sampledict != keydict) de = dictFind(keydict, key);
         o = dictGetVal(de);
 	
-	priority = getObjectPriority(o); // higher is better!
+	priority = getObjectPriority(o, key); // higher is better!
 	
         /* Insert the element inside the pool.
          * First, find the first empty bucket or the first populated

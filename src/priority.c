@@ -6,18 +6,25 @@
 #include <assert.h>
 
 long double getPriority_LFU(robj *o){
-#ifdef TRACKING_LFU
-    return getLFUCount(o) * (long double) getObjectCost(o);
-#else
-    assert(0);
-#endif
+    return getLFUCount(o);
 }
 
-long double getPriority_Degrade_F(robj *o){
+long double getPriority_Hyper(robj *o, sds keystr){
     long double numer;
     unsigned long long denom;
 
-    numer = getPriority_LFU(o);    
+    long double cost = getObjectCost(o);
+#ifdef PRIORITY_INCORPORATE_SIZE
+    long double byte_size = (rdbSavedObjectLen(o) + sdslen(keystr) + 
+	sizeof(robj));
+    cost /= byte_size;
+#else
+    (void)(keystr); // blanks : stupid way to get around UNUSED warns.
+#endif
+
+    numer = getLFUCount(o); 
+    numer *= cost;
+
     denom = estimateObjectIdleTime(o) / REDIS_LRU_CLOCK_RESOLUTION;
     if (denom == 0) { 
 	return LDBL_MAX;
@@ -44,21 +51,15 @@ long double getPriority_GD(robj *o){
 }
 
 long double getPriority_Default(robj *o){
-    unsigned long long denom = getLFUCount(o);
-    long double numer = 1.0;
-    if (denom == 0) { 
-	return LDBL_MAX;
-    }else{
-	return numer / ((long double) denom);
-    }    
+    return o->lru;
 }
 
-long double getObjectPriority(robj *o){
+long double getObjectPriority(robj *o, sds key){
     switch(PRIORITY_FUNCTION){
     case PRIORITY_FUNC_LFU: 
 	return getPriority_LFU(o);
-    case PRIORITY_FUNC_DEGRADE_F: 
-	return getPriority_Degrade_F(o);
+    case PRIORITY_FUNC_HYPER: 
+	return getPriority_Hyper(o, key);
     case PRIORITY_FUNC_LFRU:
 	return getPriority_LFRU(o);
     case PRIORITY_FUNC_GD:
