@@ -766,6 +766,7 @@ COUNT_TYPE getLFUCount(robj *o){
 #ifdef TRACKING_LFU
     return o->lfucount;
 #else
+    (void)(o);
     assert(-1);
     return 0;
 #endif
@@ -800,6 +801,8 @@ void touchObject_Hyper(robj *o){
     }else{
 	o->lfucount += 1;
     }
+#else
+    (void)(o);
 #endif
 }
 
@@ -829,6 +832,8 @@ void touchObject_Default(robj *o){
 void touchObject_LFU(robj *o){
 #ifdef TRACKING_LFU
     o->lfucount++;
+#else
+    (void)(o);
 #endif
 }
  
