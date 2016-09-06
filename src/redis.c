@@ -290,6 +290,9 @@ struct redisCommand redisCommandTable[] = {
 };
 
 struct evictionPoolEntry *evictionPoolAlloc(void);
+#ifdef PRIORITY_COST_CLASS
+struct priorityCostClass *costClassAlloc(void);
+#endif
 
 /*============================ Utility functions ============================ */
 
@@ -1830,11 +1833,11 @@ void initServer(void) {
         server.db[j].ready_keys = dictCreate(&setDictType,NULL);
         server.db[j].watched_keys = dictCreate(&keylistDictType,NULL);
         server.db[j].eviction_pool = evictionPoolAlloc();
+#ifdef PRIORITY_COST_CLASS
+        server.db[j].cost_classes = costClassAlloc();
+#endif
         server.db[j].id = j;
         server.db[j].avg_ttl = 0;
-#ifdef EVICT_PRIORITY_QUEUE
-	server.db[j].queue = create_queue();
-#endif
     }
     server.pubsub_channels = dictCreate(&keylistDictType,NULL);
     server.pubsub_patterns = listCreate();
@@ -3159,6 +3162,19 @@ struct evictionPoolEntry *evictionPoolAlloc(void) {
     return ep;
 }
 
+#ifdef PRIORITY_COST_CLASS
+struct priorityCostClass *costClassAlloc(void) {
+    struct priorityCostClass *classes;
+    int j;
+
+    classes = zmalloc(sizeof(*classes)*PRIORITY_COST_CLASS);
+    for (j = 0; j < PRIORITY_COST_CLASS; j++) {
+	classes[j].cost = 0;
+    }
+    return classes;
+}
+#endif
+
 /* This is an helper function for freeMemoryIfNeeded(), it is used in order
  * to populate the evictionPool with a few entries every time we want to
  * expire a key. Keys with idle time smaller than one of the current
@@ -3169,72 +3185,11 @@ struct evictionPoolEntry *evictionPoolAlloc(void) {
  * right. */
 
 #define EVICTION_SAMPLES_ARRAY_SIZE 128
-#ifdef EVICT_PRIORITY_QUEUE
-int count = 0;
-void evictionPoolPopulate(void *pq, dict *keydict, struct evictionPoolEntry *pool) {
-    int k;
-    sds key;
-    long double priority;
-    robj *o;
-    dictEntry *de;
-    pq_node* lowest;
-    
-    lowest = pq_get_lowest(pq);
-    key = sdsnew(lowest->key);
-    //sdsfree(lowest->key);
-    //    pq_free_node(lowest);
-
-    de = dictFind(keydict, key);
-    if (!de){
-	redisLog(REDIS_WARNING, "%s wasn't found in dict.", key);
-	return;
-    }    
-
-    /*    if (count % 5000 == 0) {
-	redisLog(REDIS_WARNING, "%s -> p = %LF, lu = %llu", key, 
-		 lowest->priority, lowest->lastuse);
-    }
-    count ++;
-    */
-    o = dictGetVal(de);
-    priority = getObjectPriority(o, key);
-    
-    /* Insert the element inside the pool.
-     * First, find the first empty bucket or the first populated
-     * bucket that has a higher priority */
-    k = 0;
-    while (k < REDIS_EVICTION_POOL_SIZE &&
-	   pool[k].key &&
-	   pool[k].priority > priority) k++;
-    if (k == 0 && pool[REDIS_EVICTION_POOL_SIZE-1].key != NULL) {
-	/* Can't insert if the element is < the worst element we have
-	 * and there are no empty buckets. */
-    } else if (k < REDIS_EVICTION_POOL_SIZE && pool[k].key == NULL) {
-	/* Inserting into empty position. No setup needed before insert. */
-    } else {
-	/* Inserting in the middle. Now k points to the first element
-	 * with priority less than the element to insert.  */
-	if (pool[REDIS_EVICTION_POOL_SIZE-1].key == NULL) {
-	    /* Free space on the right? Insert at k shifting
-	     * all the elements from k to end to the right. */
-	    memmove(pool+k+1,pool+k,
-                    sizeof(pool[0])*(REDIS_EVICTION_POOL_SIZE-k-1));
-	} else {
-	    /* No free space on right? Insert at k-1 */
-	    k--;
-	    /* Shift all elements on the left of k (included) to the
-	     * left, so we discard the element with highest priority. */
-	    sdsfree(pool[0].key);
-	    memmove(pool,pool+1,sizeof(pool[0])*k);
-	}
-    }
-
-    pool[k].key = sdsdup(key);
-    pool[k].priority = priority;
-}
-
-#else
-void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEntry *pool) {
+void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEntry *pool
+#ifdef PRIORITY_COST_CLASS
+			  , redisDb* db
+#endif
+			  ) {
     int j, k, count;
     dictEntry *_samples[EVICTION_SAMPLES_ARRAY_SIZE];
     dictEntry **samples;
@@ -3262,8 +3217,11 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
         if (sampledict != keydict) de = dictFind(keydict, key);
         o = dictGetVal(de);
 	
+#ifdef PRIORITY_COST_CLASS
+	priority = getObjectPriority(o, key, db); // higher is better!
+#else
 	priority = getObjectPriority(o, key); // higher is better!
-	
+#endif	
         /* Insert the element inside the pool.
          * First, find the first empty bucket or the first populated
          * bucket that has a higher priority */
@@ -3299,7 +3257,6 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
     }
     if (samples != _samples) zfree(samples);
 }
-#endif
 
 int freeMemoryIfNeeded(void) {
 #if WRITE_EVICTION_NOTICES == 1
@@ -3403,8 +3360,8 @@ int freeMemoryIfNeeded(void) {
                 struct evictionPoolEntry *pool = db->eviction_pool;
 
                 while(bestkey == NULL) {
-#ifdef EVICT_PRIORITY_QUEUE
-		    evictionPoolPopulate(db->queue, db->dict, db->eviction_pool);
+#ifdef PRIORITY_COST_CLASS
+                    evictionPoolPopulate(dict, db->dict, db->eviction_pool, db);
 #else
                     evictionPoolPopulate(dict, db->dict, db->eviction_pool);
 #endif

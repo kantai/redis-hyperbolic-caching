@@ -1251,3 +1251,21 @@ unsigned int countKeysInSlot(unsigned int hashslot) {
     }
     return count;
 }
+
+#ifdef PRIORITY_COST_CLASS
+int dbUpdateClass(redisClient *c, redisDb *db, COST_TYPE class, COST_TYPE new_cost){
+    if (class >= PRIORITY_COST_CLASS || class <= 0){
+	addReplyError(c, "cost class index is out of range");
+	return REDIS_ERR;
+    }
+    struct priorityCostClass* class_target = &(db->cost_classes[class]);
+    if (class_target->cost == 0){
+	class_target->cost = new_cost;
+    }else{
+	class_target->cost = (COST_TYPE) 
+	    (((double) class_target->cost * (1.0 - PRIORITY_CLASS_FRACTION)) +
+	     (PRIORITY_CLASS_FRACTION * new_cost));
+    }
+    return REDIS_OK;
+}
+#endif

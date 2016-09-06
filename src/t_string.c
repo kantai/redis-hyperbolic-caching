@@ -62,8 +62,13 @@ static int checkStringLength(redisClient *c, long long size) {
 #define REDIS_SET_NX (1<<0)     /* Set if key not exists. */
 #define REDIS_SET_XX (1<<1)     /* Set if key exists. */
 
+
 void setGenericCommand(redisClient *c, int flags, robj *key, robj *val, robj *expire, int unit, 
-		       robj *ok_reply, robj *abort_reply, robj *cost) {
+		       robj *ok_reply, robj *abort_reply, robj *cost
+#ifdef PRIORITY_COST_CLASS
+		       , robj *cost_class
+#endif
+		       ){
     long long milliseconds = 0; /* initialized to avoid any harmness warning */
     COST_TYPE cost_target = 0;
 
@@ -79,7 +84,21 @@ void setGenericCommand(redisClient *c, int flags, robj *key, robj *val, robj *ex
     if (cost) {
 	if (getCostFromObjectOrReply(c, cost, &cost_target, NULL) != REDIS_OK)
 	    return;
+	#ifdef PRIORITY_COST_CLASS
+	if (cost_class){
+	    COST_TYPE cost_class_target = 0;
+	    if (getCostFromObjectOrReply(c, cost_class, &cost_class_target, NULL) != REDIS_OK)
+		return;
+	    val->cost = cost_class_target;
+	    if (dbUpdateClass(c, c->db, cost_class_target, cost_target) != REDIS_OK)
+		return;
+	}else{
+	    addReplyError(c, "cost set without cost class");
+	    return;
+	}
+	#else
 	val->cost = cost_target;
+	#endif
     }
 
     if ((flags & REDIS_SET_NX && lookupKeyWrite(c->db,key) != NULL) ||
@@ -97,11 +116,14 @@ void setGenericCommand(redisClient *c, int flags, robj *key, robj *val, robj *ex
     addReply(c, ok_reply ? ok_reply : shared.ok);
 }
 
-/* SET key value [NX] [XX] [EX <seconds>] [PX <milliseconds>] [CX <value>] */
+/* SET key value [NX] [XX] [EX <seconds>] [PX <milliseconds>] [CX <value>] [CC <value>] */
 void setCommand(redisClient *c) {
     int j;
     robj *expire = NULL;
     robj *cost = NULL;
+#ifdef PRIORITY_COST_CLASS
+    robj *cost_class = NULL;
+#endif
 
     int unit = UNIT_SECONDS;
     int flags = REDIS_SET_NO_FLAGS;
@@ -130,6 +152,12 @@ void setCommand(redisClient *c) {
 		   (a[1] == 'x' || a[1] == 'X') && a[2] == '\0' && next) {
 	    cost = next;
 	    j++;
+#ifdef PRIORITY_COST_CLASS
+        } else if ((a[0] == 'c' || a[0] == 'C') &&
+		   (a[1] == 'c' || a[1] == 'C') && a[2] == '\0' && next) {
+	    cost_class = next;
+	    j++;
+#endif
         } else {
             addReply(c,shared.syntaxerr);
             return;
@@ -137,22 +165,38 @@ void setCommand(redisClient *c) {
     }
 
     c->argv[2] = tryObjectEncoding(c->argv[2]);
+#ifdef PRIORITY_COST_CLASS
+    setGenericCommand(c,flags,c->argv[1],c->argv[2],expire,unit,NULL,NULL,cost, cost_class);
+#else
     setGenericCommand(c,flags,c->argv[1],c->argv[2],expire,unit,NULL,NULL,cost);
+#endif
 }
 
 void setnxCommand(redisClient *c) {
     c->argv[2] = tryObjectEncoding(c->argv[2]);
+#ifdef PRIORITY_COST_CLASS
+    setGenericCommand(c,REDIS_SET_NX,c->argv[1],c->argv[2],NULL,0,shared.cone,shared.czero, NULL, NULL);
+#else
     setGenericCommand(c,REDIS_SET_NX,c->argv[1],c->argv[2],NULL,0,shared.cone,shared.czero, NULL);
+#endif
 }
 
 void setexCommand(redisClient *c) {
     c->argv[3] = tryObjectEncoding(c->argv[3]);
+#ifdef PRIORITY_COST_CLASS
+    setGenericCommand(c,REDIS_SET_NO_FLAGS,c->argv[1],c->argv[3],c->argv[2],UNIT_SECONDS,NULL,NULL,NULL, NULL);
+#else
     setGenericCommand(c,REDIS_SET_NO_FLAGS,c->argv[1],c->argv[3],c->argv[2],UNIT_SECONDS,NULL,NULL,NULL);
+#endif
 }
 
 void psetexCommand(redisClient *c) {
     c->argv[3] = tryObjectEncoding(c->argv[3]);
+#ifdef PRIORITY_COST_CLASS
+    setGenericCommand(c,REDIS_SET_NO_FLAGS,c->argv[1],c->argv[3],c->argv[2],UNIT_MILLISECONDS,NULL,NULL, NULL, NULL);
+#else
     setGenericCommand(c,REDIS_SET_NO_FLAGS,c->argv[1],c->argv[3],c->argv[2],UNIT_MILLISECONDS,NULL,NULL, NULL);
+#endif
 }
 
 int getGenericCommand(redisClient *c) {

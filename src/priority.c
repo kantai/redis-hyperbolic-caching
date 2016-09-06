@@ -9,11 +9,10 @@ long double getPriority_LFU(robj *o){
     return getLFUCount(o);
 }
 
-long double getPriority_Hyper(robj *o, sds keystr){
+long double getPriority_Hyper(robj *o, sds keystr, long double cost){
     long double numer;
     unsigned long long denom;
 
-    long double cost = getObjectCost(o);
 #ifdef PRIORITY_INCORPORATE_SIZE
     long double byte_size = (rdbSavedObjectLen(o) + sdslen(keystr) + 
 	sizeof(robj));
@@ -54,12 +53,23 @@ long double getPriority_Default(robj *o){
     return o->lru;
 }
 
-long double getObjectPriority(robj *o, sds key){
+long double getObjectPriority(robj *o, sds key
+#ifdef PRIORITY_COST_CLASS
+	, redisDb *db
+#endif
+){
     switch(PRIORITY_FUNCTION){
     case PRIORITY_FUNC_LFU: 
 	return getPriority_LFU(o);
-    case PRIORITY_FUNC_HYPER: 
-	return getPriority_Hyper(o, key);
+    case PRIORITY_FUNC_HYPER:
+	{
+#ifdef PRIORITY_COST_CLASS
+	    long double cost = getObjectCost(o, db);
+#else
+	    long double cost = getObjectCost(o);
+#endif
+	    return getPriority_Hyper(o, key, cost);
+	}
     case PRIORITY_FUNC_LFRU:
 	return getPriority_LFRU(o);
     case PRIORITY_FUNC_GD:

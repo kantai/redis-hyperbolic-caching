@@ -784,8 +784,18 @@ unsigned long long estimateObjectIdleTime(robj *o) {
     }
 }
 
-COST_TYPE getObjectCost(robj *o){
-  return o->cost;
+COST_TYPE getObjectCost(robj *o
+#ifdef PRIORITY_COST_CLASS
+			, redisDb *db
+#endif
+			){
+    #ifdef PRIORITY_COST_CLASS
+    if (o->cost <= 0 || o->cost >= PRIORITY_COST_CLASS)
+	return 1;
+    return db->cost_classes[o->cost].cost;
+    #else
+    return o->cost;
+    #endif
 }
 
 COST_TYPE setObjectCost(robj *o, COST_TYPE cost){
@@ -902,7 +912,11 @@ void objectCommand(redisClient *c) {
     } else if (!strcasecmp(c->argv[1]->ptr,"cost") && c->argc == 3) {
         if ((o = objectCommandLookupOrReply(c,c->argv[2],shared.nullbulk))
                 == NULL) return;
+	#ifdef PRIORITY_COST_CLASS
+        addReplyCost(c,getObjectCost(o, c->db));
+	#else
         addReplyCost(c,getObjectCost(o));
+	#endif
     } else {
         addReplyError(c,"Syntax error. Try OBJECT (refcount|encoding|idletime)");
     }

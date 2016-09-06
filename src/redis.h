@@ -403,6 +403,10 @@ typedef long long mstime_t; /* millisecond time type. */
 #define PRIORITY_FUNCTION         0
 #endif
 
+#ifndef PRIORITY_CLASS_FRACTION
+#define PRIORITY_CLASS_FRACTION   0.2
+#endif
+
 #define LFU_DEGRADE             0.99999
 #define HYPER_LEEWAY            0.1
 
@@ -499,6 +503,12 @@ struct evictionPoolEntry {
     sds key;                        /* Key name. */
 };
 
+#ifdef PRIORITY_COST_CLASS
+struct priorityCostClass {
+    COST_TYPE cost;
+};
+#endif
+
 /* Redis database representation. There are multiple databases identified
  * by integers from 0 (the default database) up to the max configured
  * database. The database number is the 'id' field in the structure. */
@@ -509,6 +519,9 @@ typedef struct redisDb {
     dict *ready_keys;           /* Blocked keys that received a PUSH */
     dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
     struct evictionPoolEntry *eviction_pool;    /* Eviction pool of keys */
+#ifdef PRIORITY_COST_CLASS
+    struct priorityCostClass *cost_classes;
+#endif
     int id;                     /* Database ID */
     long long avg_ttl;          /* Average TTL, just for stats */
 } redisDb;
@@ -1209,8 +1222,20 @@ int equalStringObjects(robj *a, robj *b);
 void touchObject(robj *o);
 unsigned long long estimateObjectIdleTime(robj *o);
 COUNT_TYPE getLFUCount(robj *o);
+#ifdef PRIORITY_COST_CLASS
+COST_TYPE getObjectCost(robj *o, redisDb *db);
+#else
 COST_TYPE getObjectCost(robj *o);
+#endif
+#ifdef PRIORITY_COST_CLASS
+long double getObjectPriority(robj *o, sds key, redisDb *db);
+#else
 long double getObjectPriority(robj *o, sds key);
+#endif
+
+#ifdef PRIORITY_COST_CLASS
+int dbUpdateClass(redisClient *c, redisDb *db, COST_TYPE class, COST_TYPE new_cost);
+#endif
 
 #define sdsEncodedObject(objptr) (objptr->encoding == REDIS_ENCODING_RAW || objptr->encoding == REDIS_ENCODING_EMBSTR)
 
