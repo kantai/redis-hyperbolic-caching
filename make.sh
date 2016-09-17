@@ -20,7 +20,7 @@ then
 REDIS_CFLAGS="$REDIS_CFLAGS -D PRIORITY_INCORPORATE_SIZE=1"
 fi
 
-cc = $3
+cc=$3
 if [[ "$cc" == "classes" ]];
 then
 REDIS_CFLAGS="$REDIS_CFLAGS -D PRIORITY_COST_CLASS=32"
